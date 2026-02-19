@@ -34,6 +34,4 @@ The fine-tuned base model underperforms the Instruct variant by ~12 percentage p
 - **Base vs. Instruct starting point.** The Instruct model benefits from Meta's full-scale instruction tuning across millions of examples. My QLoRA run trains the raw base model on only ~7k examples for a single epoch — a fraction of the data and compute used in the official post-training.
 - **Limited training data.** 7,272 examples is a small subset; scaling to the full 80k dataset with multiple epochs would likely close the gap.
 - **512-token sequence limit.** Many complex code solutions were filtered out due to small GPU limit, biasing training toward simpler examples.
--
-
 
