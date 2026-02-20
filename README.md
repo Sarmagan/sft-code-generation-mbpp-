@@ -20,13 +20,13 @@ The trained adapter is evaluated on **MBPP** (Mostly Basic Python Problems), a b
 
 ## Results
 
-| Model                              | Score                 |
-| ---------------------------------- | --------------------- |
-| Llama-3.2-3B-Instruct              | **242 / 500 (48.4%)** |
-| Gemma-2B-IT                        | 98 / 500 (19.6%)      |
-| Phi-3-Mini-4K-Instruct             | 214 / 500 (42.8%)     |
-| Qwen2.5-Coder-3B-Instruct          |                       |
-| Llama-3.2-3B + QLoRA (this work)   | 181 / 500 (36.2%)     |
+| Model                            | Score                 |
+| -------------------------------- | --------------------- |
+| Llama-3.2-3B-Instruct            | 242 / 500 (48.4%)     |
+| Gemma-2B-IT                      | 98 / 500 (19.6%)      |
+| Phi-3-Mini-4K-Instruct           | 214 / 500 (42.8%)     |
+| Qwen2.5-Coder-3B-Instruct        | **296 / 500 (59.2%)** |
+| Llama-3.2-3B + QLoRA (this work) | 181 / 500 (36.2%)     |
 
 **Training config for this run:** 1 epoch, 7,272 training examples (randomly sampled from filtered Evol-Instruct-Code-80k).
 
