@@ -13,7 +13,13 @@ from peft import PeftModel
 from datasets import load_dataset
 
 # BASE_MODEL = "meta-llama/Llama-3.2-3B-Instruct"
+# BASE_MODEL = "Qwen/Qwen2.5-Coder-3B-Instruct" # "Qwen/Qwen3-4B"
+# BASE_MODEL = "Qwen/Qwen3-4B-Thinking-2507"
+# BASE_MODEL = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+# BASE_MODEL = "microsoft/Phi-3-mini-4k-instruct"
+# BASE_MODEL = "google/gemma-2b-it"
 BASE_MODEL = "meta-llama/Llama-3.2-3B"
+
 BATCH_SIZE = 16
 REVISION = "b40621c1a4dcb65c065dffb0ee1c1298ce56d22e"
 
@@ -29,6 +35,8 @@ use_bf16 = capability[0] >= 8
 
 def load_model(adapter_path=None):
     """Load base model with optional LoRA adapter."""
+    print("LOADING MODEL:", BASE_MODEL)
+
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
     tokenizer.padding_side = "left"  # Left-padding for batched generation
@@ -41,8 +49,15 @@ def load_model(adapter_path=None):
     )
 
     model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL, quantization_config=quant_config, device_map={"": 1}
+        BASE_MODEL, quantization_config=quant_config, device_map={"": 0}
     )
+
+    # model = AutoModelForCausalLM.from_pretrained(
+    #     BASE_MODEL,
+    #     # torch_dtype=torch.bfloat16 if use_bf16 else torch.float16,
+    #     device_map={"": 1}
+    # )
+
     model.generation_config = GenerationConfig.from_pretrained(BASE_MODEL)
     eos = model.generation_config.eos_token_id
     if isinstance(eos, list):
@@ -81,41 +96,82 @@ def _build_prompt(tokenizer, task_description, test_list):
         user_content += "\n\nTest cases:\n" + "\n".join(test_list)
 
     if tokenizer.chat_template:
-        # Instruct model: use chat template
-        messages = [
+        # Try with system message first; fall back to user-only
+        messages_with_system = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ]
-        return tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        messages_without_system = [
+            {"role": "user", "content": SYSTEM_PROMPT + "\n\n" + user_content},
+        ]
+        try:
+            return tokenizer.apply_chat_template(
+                messages_with_system, tokenize=False, add_generation_prompt=True
+            )
+        except Exception:
+            return tokenizer.apply_chat_template(
+                messages_without_system, tokenize=False, add_generation_prompt=True
+            )
     else:
-        # Base model: simple prompt format
         return f"### Instruction:\n{SYSTEM_PROMPT}\n\n### Input:\n{user_content}\n\n### Response:\n"
 
+# def _strip_code_fences(code):
+#     """Strip markdown code fences if present."""
+#     code = re.sub(r"^```(?:python)?\s*\n?", "", code.strip())
+#     code = re.sub(r"\n?```\s*$", "", code.strip())
+#     return code
+
 def _strip_code_fences(code):
-    """Strip markdown code fences if present."""
-    code = re.sub(r"^```(?:python)?\s*\n?", "", code.strip())
-    code = re.sub(r"\n?```\s*$", "", code.strip())
-    return code
+    """Extract Python code from model output, handling reasoning blocks and multiple fences."""
+    # 1. Strip reasoning blocks entirely (crucial for R1/Thinking models)
+    code = re.sub(r"<think>.*?</think>", "", code, flags=re.DOTALL)
+    
+    # 2. Extract all markdown code blocks
+    blocks = re.findall(r"```(?:[pP]ython)?\s*\n(.*?)\n?```", code, re.DOTALL)
+    
+    if blocks:
+        # If there are multiple blocks, find the first one that contains a function or import.
+        # This prevents grabbing empty blocks or isolated usage examples.
+        for block in blocks:
+            if re.search(r"^\s*(?:def |class |import |from )", block, re.MULTILINE):
+                return block.strip()
+        # Fallback to the largest block if no obvious definitions are found
+        return max(blocks, key=len).strip()
+        
+    # 3. Fallback: No markdown fences used.
+    # Find where the code starts to trim leading prose.
+    match = re.search(r"^(?:def |class |import |from |@).*", code, re.MULTILINE | re.DOTALL)
+    if match:
+        extracted = match.group(0)
+        # Basic heuristic to remove obvious trailing prose without breaking valid code
+        # Splits off blocks of text that start with a capital letter and have no indentation
+        extracted = re.sub(r"\n\n[A-Z][^\n]+\.?\s*$", "", extracted)
+        return extracted.strip()
+        
+    # Absolute fallback
+    return code.strip()
 
-
-def generate_code(model, tokenizer, task_description, test_list, max_new_tokens=512):
+def generate_code(model, tokenizer, task_description, test_list, max_new_tokens=4096):
     """Generate code for a single task description."""
     prompt = _build_prompt(tokenizer, task_description, test_list)
+    # prompt += "</think>\n```python\n"  # skip thinking, nudge toward code
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    # print(repr(prompt))  # inspect the raw prompt
 
     with torch.no_grad():
         output_ids = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            do_sample=False,
-            temperature=0,
-            top_p=None,
+            do_sample=True,
+            # temperature=0,
+            # top_p=None,
         )
 
     generated_ids = output_ids[0][inputs["input_ids"].shape[1]:]
     generated_code = tokenizer.decode(generated_ids, skip_special_tokens=True)
+
+    # print("anan")
+    # print(generated_code)
     return _strip_code_fences(generated_code)
 
 
@@ -132,9 +188,9 @@ def _generate_batch_inner(model, tokenizer, prompts, max_new_tokens=512):
         output_ids = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            do_sample=False,
-            temperature=None,
-            top_p=None,
+            do_sample=True,
+            # temperature=0,
+            # top_p=None,
         )
 
     # Slice off the input portion for each sequence in the batch
@@ -336,3 +392,20 @@ if __name__ == "__main__":
         generate_and_test(model, tokenizer, example)
     else:
         evaluate_on_split(model, tokenizer, split=args.split, max_samples=args.max_samples, batch_size=args.batch_size, save_results=args.save)
+
+    # tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+    # model = AutoModelForCausalLM.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", 
+    #     device_map={"": 1})
+    # messages = [
+    #     {"role": "user", "content": "Write a python function to remove first and last occurrence of a given character from the string"},
+    #     ]
+    # inputs = tokenizer.apply_chat_template(
+    #     messages,
+    #     add_generation_prompt=True,
+    #     tokenize=True,
+    #     return_dict=True,
+    #     return_tensors="pt",
+    # ).to(model.device)
+
+    # outputs = model.generate(**inputs, max_new_tokens=1024)
+    # print(tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:]))
